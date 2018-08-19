@@ -9,7 +9,7 @@ import tempfile
 from contextlib import contextmanager
 from os import chdir, getcwd, mkdir
 from os.path import exists
-from subprocess import CalledProcessError, check_call, check_output
+from subprocess import CalledProcessError, check_call, check_output, run
 
 import pkgpanda.build.constants
 import pkgpanda.build.src_fetchers
@@ -824,11 +824,34 @@ class IdBuilder():
 
         return self._buildinfo
 
+def transform_to_rpm(pkg_path, metadata):
+    dependencies = ['='.join(require.split('--')) for require in metadata['build_ids']['requires']]
+    package_name = metadata['name']
+    package_version= metadata['package_version']
+
+    fpm_call = ['fpm', '-s', 'tar', '-t', 'rpm',
+                '--rpm-compression', 'xz',
+                '--rpm-os', 'linux',
+                '--vendor', 'Mesosphere',
+                '--url', 'https://dcos.io',
+                '--package-name-suffix', 'dcos',
+                '--maintainer', 'ops@mesosphere.com',
+                '--category', 'dcos', '--name', package_name,
+                '--version', package_version]
+    for dependency in dependencies:
+        fpm_call+=['-d']
+        fpm_call+=[dependency]
+    fpm_call+=[pkg_path]
+
+    print(' '.join(fpm_call))
+    run(fpm_call)
 
 def build(package_store: PackageStore, name: str, variant, clean_after_build, recursive=False):
     msg = "Building package {} variant {}".format(name, pkgpanda.util.variant_name(variant))
     with logger.scope(msg):
-        return _build(package_store, name, variant, clean_after_build, recursive)
+        build_result = _build(package_store, name, variant, clean_after_build, recursive)
+        transform_to_rpm(build_result[0], build_result[1])
+        return build_result[0]
 
 
 def _build(package_store, name, variant, clean_after_build, recursive):
@@ -1092,7 +1115,7 @@ def _build(package_store, name, variant, clean_after_build, recursive):
         # the build function.
         write_string(package_store.get_last_build_filename(name, variant), str(pkg_id))
 
-        return pkg_path
+        return pkg_path, final_buildinfo
 
     # Try downloading.
     dl_path = package_store.try_fetch_by_id(pkg_id)
@@ -1103,7 +1126,7 @@ def _build(package_store, name, variant, clean_after_build, recursive):
         write_string(package_store.get_last_build_filename(name, variant), str(pkg_id))
         print(dl_path, pkg_path)
         assert dl_path == pkg_path
-        return pkg_path
+        return pkg_path, final_buildinfo
 
     # Fall out and do the build since it couldn't be downloaded
     print("Unable to download from cache. Proceeding to build")
@@ -1270,4 +1293,4 @@ def _build(package_store, name, variant, clean_after_build, recursive):
     print("Package built.")
     if clean_after_build:
         clean()
-    return pkg_path
+    return pkg_path, final_buildinfo
